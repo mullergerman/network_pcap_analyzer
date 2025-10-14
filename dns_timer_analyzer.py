@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Deque, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import dpkt
+from dpkt.ethernet import VLANtag8021Q
 
 DNS_QTYPE_NAMES = {
     getattr(dpkt.dns, "DNS_A", 1): "A",
@@ -220,18 +221,46 @@ def analyze_pcap(
 
     for timestamp, raw in iter_packets(path):
         packet_index += 1
+        ip_layer = None
+
+        ethernet: Optional[dpkt.ethernet.Ethernet] = None
         try:
             ethernet = dpkt.ethernet.Ethernet(raw)
         except (dpkt.UnpackError, dpkt.NeedData):
+            ethernet = None
+
+        if ethernet is not None:
+            network_payload = ethernet.data
+            if isinstance(network_payload, VLANtag8021Q):
+                network_payload = network_payload.data
+            if isinstance(network_payload, (dpkt.ip.IP, dpkt.ip6.IP6)):
+                ip_layer = network_payload
+
+        if ip_layer is None:
+            try:
+                sll = dpkt.sll.SLL(raw)
+            except (dpkt.UnpackError, dpkt.NeedData):
+                sll = None
+            if sll is not None:
+                network_payload = sll.data
+                if isinstance(network_payload, (dpkt.ip.IP, dpkt.ip6.IP6)):
+                    ip_layer = network_payload
+
+        if ip_layer is None:
             continue
 
-        ip_layer = ethernet.data
         if isinstance(ip_layer, dpkt.ip.IP):
-            src_ip = socket.inet_ntoa(ip_layer.src)
-            dst_ip = socket.inet_ntoa(ip_layer.dst)
+            try:
+                src_ip = socket.inet_ntoa(ip_layer.src)
+                dst_ip = socket.inet_ntoa(ip_layer.dst)
+            except OSError:
+                continue
         elif isinstance(ip_layer, dpkt.ip6.IP6):
-            src_ip = socket.inet_ntop(socket.AF_INET6, ip_layer.src)
-            dst_ip = socket.inet_ntop(socket.AF_INET6, ip_layer.dst)
+            try:
+                src_ip = socket.inet_ntop(socket.AF_INET6, ip_layer.src)
+                dst_ip = socket.inet_ntop(socket.AF_INET6, ip_layer.dst)
+            except OSError:
+                continue
         else:
             continue
 
